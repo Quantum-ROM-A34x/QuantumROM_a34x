@@ -249,7 +249,7 @@ jobs:
           DISABLE_SECURITY "$FIRM_DIR/$TARGET_DEVICE"
           PATCH_BT_LIB "$FIRM_DIR/$TARGET_DEVICE" "$WORK_DIR"
 
-      - name: Build img
+      - name: Build img - ${{ github.event.inputs.OUTPUT_FILESYSTEM }}
         run: |
           FIRM_DIR="$(pwd)/FW"
           OUT_DIR="$(pwd)/OUT"
