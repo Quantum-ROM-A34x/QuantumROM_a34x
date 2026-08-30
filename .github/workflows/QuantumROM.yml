@@ -249,6 +249,15 @@ jobs:
           DISABLE_SECURITY "$FIRM_DIR/$TARGET_DEVICE"
           PATCH_BT_LIB "$FIRM_DIR/$TARGET_DEVICE" "$WORK_DIR"
 
+      - name: Build img
+        run: |
+          FIRM_DIR="$(pwd)/FW"
+          OUT_DIR="$(pwd)/OUT"
+          TARGET_DEVICE="${{ github.event.inputs.TARGET_DEVICE }}"
+          OUTPUT_FILESYSTEM="${{ github.event.inputs.OUTPUT_FILESYSTEM }}"
+          source "$(pwd)/scripts/QuantumRom.sh"
+          BUILD_IMG "$FIRM_DIR/$TARGET_DEVICE" "all" "$OUTPUT_FILESYSTEM" "$OUT_DIR"
+
       - name: Compress all .img & make zip file before upload.
         run: |
           echo "BUILD_TIME=$(TZ='Asia/Dhaka' date '+%Y-%m-%d %I:%M:%S %p UTC+6')" >> "$GITHUB_ENV"
