@@ -1,4 +1,4 @@
-Name: QuantumROM Tools.
+name: QuantumROM Tools.
 
 on:
   workflow_dispatch:
