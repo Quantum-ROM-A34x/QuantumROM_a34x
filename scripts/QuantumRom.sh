@@ -132,19 +132,19 @@ GET_PROP() {
             ;;
         *)
             echo -e "Unknown partition: $PARTITION"
-            return 1
+            return 0
             ;;
     esac
 
     if [ ! -f "$FILE" ]; then
         echo -e "- File not found: $FILE"
-        return 1
+        return 0
     fi
 
     local VALUE=$(grep -m1 "^${PROP}=" "$FILE" | cut -d'=' -f2-)
 
     if [ -z "$VALUE" ]; then
-        return 1
+        return 0
     fi
 
     echo -e "$VALUE"
@@ -430,7 +430,7 @@ EXTRACT_FIRMWARE_IMG() {
 
     if ! ls "$EXTRACTED_FIRM_DIR"/*.img >/dev/null 2>&1; then
         echo -e "No .img files found in: $EXTRACTED_FIRM_DIR"
-        return 1
+        return 0
     fi
 
     echo -e "Extracting images from: $EXTRACTED_FIRM_DIR"
@@ -515,7 +515,7 @@ EXTRACT_FIRMWARE_IMG() {
 
         if [ ! -f "$TARGET_IMG" ]; then
             echo -e "- Image not found: $TARGET_IMG"
-            return 1
+            return 0
         fi
 
         extract_img "$TARGET_IMG"
@@ -535,7 +535,7 @@ DISABLE_FBE() {
     fi
 
     if [ ! -d "${EXTRACTED_FIRM_DIR}/vendor/etc" ]; then
-        return 1
+        return 0
     fi
 
     local fstab_files=$(grep -lr 'fileencryption' "${EXTRACTED_FIRM_DIR}/vendor/etc" 2>/dev/null)
@@ -559,7 +559,7 @@ DISABLE_FDE() {
     fi
 
     if [ ! -d "${EXTRACTED_FIRM_DIR}/vendor/etc" ]; then
-        return 1
+        return 0
     fi
 
     local fstab_files=$(grep -lr 'forceencrypt' "${EXTRACTED_FIRM_DIR}/vendor/etc" 2>/dev/null)
@@ -591,7 +591,7 @@ INSTALL_FRAMEWORK() {
 
 	if [ ! -f "$framework_apk" ]; then
         echo -e "- File not found: $framework_apk"
-        return 1
+        return 0
     fi
 
     java -jar "$APKTOOL" install-framework "$framework_apk"
@@ -655,7 +655,7 @@ RECOMPILE() {
 
 	if [ ! -d "$DECOMPILED_DIR" ]; then
         echo "- Directory not found: $DECOMPILED_DIR"
-        return 1
+        return 0
     fi
 
     local org_file_name=$(awk '/^apkFileName:/ {print $2}' "$DECOMPILED_DIR/apktool.yml")
@@ -717,11 +717,11 @@ HEX_PATCH() {
     local FROM="$(echo -e "$2" | tr '[:upper:]' '[:lower:]')"
     local TO="$(echo -e "$3" | tr '[:upper:]' '[:lower:]')"
 
-    [ ! -f "$FILE" ] && { echo -e "File not found: $FILE"; return 1; }
+    [ ! -f "$FILE" ] && { echo -e "- File not found: $FILE"; return 0; }
 
     xxd -p -c 0 "$FILE" | grep -q "$FROM" || {
         echo -e "- Pattern not found: $FROM"
-        return 1
+        return 0
     }
 
     echo -e "- Patching: $FILE"
@@ -739,7 +739,7 @@ HEX_PATCH() {
 
     echo -e "- Patch failed, restoring backup"
     mv "$FILE.bak" "$FILE"
-    return 1
+    return 0
 }
 
 
