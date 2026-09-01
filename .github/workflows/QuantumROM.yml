@@ -1,4 +1,4 @@
-name: QuantumROM Tools.
+Name: QuantumROM Tools.
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       STOCK_DEVICE:
         description: "STOCK_DEVICE_MODEL or None"
         required: true
-        default: "SM-A225F"
+        default: "SM-A346E"
 
       USE_UI_8_TETHERING_APEX:
         description: "Set True if your kernel BPF version is 5.4 (lower than 5.10)."
@@ -21,7 +21,7 @@ on:
       TARGET_DEVICE_CSC:
         description: "TARGET_DEVICE_CSC."
         required: true
-        default: "BKD"
+        default: "XSG"
 
       TARGET_FW_VERSION:
         description: "Specific Samsung firmware version (PDA/CSC/MODEM) OR (AP/CSC/CP)"
@@ -77,6 +77,8 @@ jobs:
   build:
     name: Start QuantumROM Tools
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write # Required to create GitHub Releases
 
     steps:
       - name: Checkout repository.
@@ -276,8 +278,19 @@ jobs:
           7z a -tzip "$ZIP_PATH" "$OUT_DIR"/* -mx=5
           echo "ZIP_PATH=$ZIP_PATH" | tee -a "$GITHUB_ENV"
 
-      - name: Upload file in GoFile & Create Release.
+      - name: Create GitHub Release and Upload ROM
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.TARGET_DEVICE }}-${{ inputs.STOCK_DEVICE }}-${{ github.run_number }}
+          name: QuantumROM Port - ${{ inputs.TARGET_DEVICE }} for ${{ inputs.STOCK_DEVICE }}
+          body: |
+            **QuantumROM Build Completed**
+            - **Target Device:** ${{ inputs.TARGET_DEVICE }} (${{ inputs.TARGET_DEVICE_CSC }})
+            - **Stock Device:** ${{ inputs.STOCK_DEVICE }}
+            - **Filesystem:** ${{ inputs.OUTPUT_FILESYSTEM }}
+            - **Build Time:** ${{ env.BUILD_TIME }}
+            
+            *Automatically compiled via GitHub Actions.*
+          files: ${{ env.ZIP_PATH }}
         env:
-          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
-        run: |
-          bash release.sh
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
