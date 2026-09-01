@@ -6,7 +6,7 @@ on:
       STOCK_DEVICE:
         description: "STOCK_DEVICE_MODEL or None"
         required: true
-        default: "SM-A346E"
+        default: "SM-A225F"
 
       USE_UI_8_TETHERING_APEX:
         description: "Set True if your kernel BPF version is 5.4 (lower than 5.10)."
@@ -21,7 +21,7 @@ on:
       TARGET_DEVICE_CSC:
         description: "TARGET_DEVICE_CSC."
         required: true
-        default: "XSG"
+        default: "BKD"
 
       TARGET_FW_VERSION:
         description: "Specific Samsung firmware version (PDA/CSC/MODEM) OR (AP/CSC/CP)"
@@ -278,19 +278,39 @@ jobs:
           7z a -tzip "$ZIP_PATH" "$OUT_DIR"/* -mx=5
           echo "ZIP_PATH=$ZIP_PATH" | tee -a "$GITHUB_ENV"
 
+      - name: Calculate File Info and Timestamp
+        run: |
+          FILE_SIZE=$(du -h "$ZIP_PATH" | cut -f1)
+          MD5_SUM=$(md5sum "$ZIP_PATH" | awk '{print $1}')
+          TIMESTAMP=$(date +%s)
+          
+          echo "FILE_SIZE=$FILE_SIZE" | tee -a "$GITHUB_ENV"
+          echo "MD5_SUM=$MD5_SUM" | tee -a "$GITHUB_ENV"
+          echo "TIMESTAMP=$TIMESTAMP" | tee -a "$GITHUB_ENV"
+
       - name: Create GitHub Release and Upload ROM
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.TARGET_DEVICE }}-${{ inputs.STOCK_DEVICE }}-${{ github.run_number }}
-          name: QuantumROM Port - ${{ inputs.TARGET_DEVICE }} for ${{ inputs.STOCK_DEVICE }}
+          tag_name: ${{ inputs.TARGET_DEVICE }}-${{ env.TIMESTAMP }}
+          name: ${{ inputs.TARGET_DEVICE }} Port For ${{ inputs.STOCK_DEVICE }}
           body: |
-            **QuantumROM Build Completed**
-            - **Target Device:** ${{ inputs.TARGET_DEVICE }} (${{ inputs.TARGET_DEVICE_CSC }})
-            - **Stock Device:** ${{ inputs.STOCK_DEVICE }}
-            - **Filesystem:** ${{ inputs.OUTPUT_FILESYSTEM }}
-            - **Build Time:** ${{ env.BUILD_TIME }}
-            
-            *Automatically compiled via GitHub Actions.*
+            #### 📊 File Info:
+            • Size: ${{ env.FILE_SIZE }}
+            • Build Time: ${{ env.BUILD_TIME }}
+            • MD5: ${{ env.MD5_SUM }}
+
+            #### 📱 Rom Info:
+            • Ported For: ${{ inputs.STOCK_DEVICE }}
+            • Ported From: ${{ inputs.TARGET_DEVICE }}
+            • Build Version: ${{ env.VERSION }}
+            • Android Version: ${{ env.ANDROID_VERSION }}
+            • One UI Version: ${{ env.ONE_UI_VERSION }}
+            • CPU ABILIST: ${{ env.CPU_ABILIST }}
+
+            #### ⚙️ Build Options:
+            • Filesystem: ${{ inputs.OUTPUT_FILESYSTEM }}
+            • Compressed IMG: ${{ inputs.COMPRESS_IMG_TO_XZ }}
+            • Used OneUI 8 Tethering APEX: ${{ inputs.USE_UI_8_TETHERING_APEX }}
           files: ${{ env.ZIP_PATH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
