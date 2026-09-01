@@ -255,4 +255,5 @@ DEBLOAT() {
     rm -rf "$EXTRACTED_FIRM_DIR/system/system/preload"
 	rm -rf "$EXTRACTED_FIRM_DIR/system/system/skt"
 	rm -rf "$EXTRACTED_FIRM_DIR/system/system/tts"
+	rm -rf "$EXTRACTED_FIRM_DIR/product/app/YouTube/oat"
 }
