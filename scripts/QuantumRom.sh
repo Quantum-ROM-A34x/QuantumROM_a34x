@@ -2,7 +2,6 @@
 
 ###################################################################################################
 
-
 # QT DIR
 QT_DIR="$(pwd)"
 
@@ -26,6 +25,9 @@ chmod +x "$sload_f2fs"
 chmod +x "$mkfs_erofs"
 chmod +x "$make_ext4fs"
 chmod +x "$extract_erofs"
+
+source "$(pwd)/scripts/debloat.sh"
+source "$(pwd)/scripts/git_utils.sh"
 
 
 DOWNLOAD_FIRMWARE() {
