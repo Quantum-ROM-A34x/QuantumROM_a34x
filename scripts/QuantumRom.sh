@@ -30,6 +30,57 @@ source "$(pwd)/scripts/debloat.sh"
 source "$(pwd)/scripts/git_utils.sh"
 
 
+WGET_DOWNLOAD() {
+    local URL="$1"
+    local OUT_DIR="$2"
+
+    if [ -z "$URL" ] || [ -z "$OUT_DIR" ]; then
+        echo "Usage: WGET_DOWNLOAD <URL> <OUTPUT_DIRECTORY>"
+        return 1
+    fi
+
+    mkdir -p "$OUT_DIR" || {
+        echo "- Failed to create output directory:"
+        echo "    $OUT_DIR"
+        exit 1
+    }
+
+    local FILE=$(basename "${URL%%\?*}")
+    local OUT="$OUT_DIR/$FILE"
+
+    if ! wget --spider -q "$URL"; then
+        echo "- File is not downloadable:"
+        echo "    $URL"
+        exit 1
+    fi
+
+    echo "- Downloading: $FILE"
+
+    wget --no-check-certificate -q -O "$OUT" "$URL" &
+    local PID=$!
+
+    local SPINNER='|/-\'
+    local i=0
+
+    while kill -0 "$PID" 2>/dev/null; do
+        printf '\r- Downloading... %s' "${SPINNER:i++%4:1}"
+        sleep 0.2
+    done
+
+    wait "$PID"
+    local STATUS=$?
+
+    if [ "$STATUS" -ne 0 ]; then
+        echo
+        echo "- Download failed"
+        rm -f "$OUT"
+        exit 1
+    fi
+
+    printf '\r- Download completed: %s\n' "$OUT"
+}
+
+
 DOWNLOAD_FIRMWARE() {
     echo " "
 
@@ -45,6 +96,18 @@ DOWNLOAD_FIRMWARE() {
 
     rm -rf "$DOWN_DIR"
     mkdir -p "$DOWN_DIR"
+
+    if [ "${#CSC}" -ne 3 ]; then
+        echo "- CSC is not 3 characters"
+        echo "- Treating CSC as download URL"
+		if [[ "$CSC" =~ gofile\.io/d/([^/?]+) ]]; then
+            echo "GoFile link is not supported"
+			exit 1
+        else
+            WGET_DOWNLOAD "$CSC" "$DOWN_DIR"
+		    return 0
+	    fi
+	fi
 
     echo -e "======================================"
     echo -e "  Samsung FW Downloader   "
@@ -221,6 +284,17 @@ EXTRACT_FIRMWARE() {
         echo -e "- Directory not found: $FIRM_DIR"
         exit
     fi
+
+# For extension less file
+for file in "$FIRM_DIR"/*; do
+    [ -f "$file" ] || continue
+
+    case "$(basename "$file")" in
+        *.*) continue ;;
+    esac
+
+    7z x -y -bd -bsp1 -o"$FIRM_DIR" "$file"
+done
 
     # ---- ZIP ----
     for file in "$FIRM_DIR"/*.zip; do
