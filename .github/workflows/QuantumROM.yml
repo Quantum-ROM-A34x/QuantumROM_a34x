@@ -147,6 +147,9 @@ jobs:
           sudo apt install -y p7zip-full lz4 liblz4-1 liblz4-dev libzstd1 libzstd-dev build-essential android-sdk-libsparse-utils \
               f2fs-tools fuse2fs fuse e2fsprogs python3 python3-pip zipalign unzip openjdk-21-jdk jq perl xxd kmod erofs-utils curl wget
           sudo modprobe f2fs || true
+          git clone https://github.com/SN-Abdullah-Al-Noman/GoFileDownloader.git
+          cd GoFileDownloader
+          pip install -r requirements.txt
           mkdir -p FW WORK OUT
 
       - name: Download firmware ▶️ ${{ inputs.TARGET_DEVICE }} - ${{ inputs.TARGET_DEVICE_CSC_OR_DOWNLOAD_LINK }}
@@ -253,12 +256,8 @@ jobs:
       - name: Apply others features and patch
         run: |
           source "$(pwd)/scripts/QuantumRom.sh"
-          trap 'echo "ERROR: line=${LINENO} file=${BASH_SOURCE[0]} command=${BASH_COMMAND}"; echo "FUNCNAME: ${FUNCNAME[*]}"' ERR
-          PS4='+ ${BASH_SOURCE}:${LINENO}: '
-          set -x
           PATCH_SELINUX "$FIRM_DIR/$TARGET_DEVICE"
           DISABLE_SECURITY "$FIRM_DIR/$TARGET_DEVICE"
-          set +x
 
       - name: Build img - ${{ inputs.OUTPUT_FILESYSTEM }}
         run: |
@@ -288,4 +287,12 @@ jobs:
         env:
           GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
         run: |
+          source "$(pwd)/scripts/QuantumRom.sh"
+          export ANDROID_VERSION=$(GET_PROP "$FIRM_DIR/$TARGET_DEVICE" "system" "ro.system.build.version.release")
+          ONEUI_VERSION=$(GET_PROP "$FIRM_DIR/$TARGET_DEVICE" "system" "ro.build.version.oneui")
+          export ONEUI_VERSION=$(echo "$ONEUI_VERSION" | sed -E 's/^([0-9])0+$/\1.0/; s/^([0-9])([0-9]*)0+$/\1.\2/')
+          export BUILD_VERSION=$(GET_PROP "$FIRM_DIR/$TARGET_DEVICE" "system" "ro.build.version.incremental")
+          export SDK_VERSION=$(GET_PROP "$FIRM_DIR/$TARGET_DEVICE" "system" "ro.system.build.version.sdk")
+          export SECURITY_PATCH=$(GET_PROP "$FIRM_DIR/$TARGET_DEVICE" "system" "ro.build.version.security_patch")
+          export CPU_ABILIST=$(GET_PROP "$FIRM_DIR/$TARGET_DEVICE" "system" "ro.system.product.cpu.abilist")
           bash release.sh
