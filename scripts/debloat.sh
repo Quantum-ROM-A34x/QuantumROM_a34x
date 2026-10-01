@@ -1,5 +1,6 @@
 #!/bin/bash
 
+
 # GENERAL / SYSTEM / BLOAT
 DEBLOAT_APPS=(
 "HMT" "PaymentFramework" "FactoryCameraFB"
@@ -62,22 +63,27 @@ SAMSUNG_APPS=(
 )
 
 # =========================
-# SAMSUNG BIXBY & DEX APPS
+# SAMSUNG BIXBY APPS
 # =========================
 SAMSUNG_BIXBY_APPS=(
 "Bixby"
 "BixbyAgent"
 "BixbyService"
 "BixbyVisionFramework3.5"
-"SystemUIBixby2"
 "BixbyWakeup"
+"SystemUIBixby2"
+"VoiceWakeup"
 )
 
+# =========================
+# SAMSUNG DEX APPS
+# =========================
 SAMSUNG_DEX_APPS=(
 "DesktopModeUiService"
-"KnoxDesktopLauncher"
+"DesktopSystemUI"
 "SamsungDeXHome"
-"WirelessDeX"
+"SamsungDex"
+"SecMyFilesDeX"
 )
 
 # =========================
@@ -211,7 +217,7 @@ KICK() {
         echo -e "Usage: ${FUNCNAME[0]} <EXTRACTED_FIRM_DIR> <APPS...>"
         return 1
     fi
-
+    
     local EXTRACTED_FIRM_DIR="$1"
     shift
     local APPS_LIST=("$@")
@@ -304,8 +310,8 @@ DEBLOAT() {
     REMOVE_FABRIC_CRYPTO "$EXTRACTED_FIRM_DIR"
 
     echo -e "- Deleting unnecessary files and folders."
-    rm -rf "$EXTRACTED_FIRM_DIR/system/system/app"/SamsungTTS*
     rm -rf "$EXTRACTED_FIRM_DIR/system/system/etc/public.libraries-edensdk.samsung.txt"
+    rm -rf "$EXTRACTED_FIRM_DIR/system/system/app"/SamsungTTS*
     rm -rf "$EXTRACTED_FIRM_DIR/system/system/etc/init/boot-image.bprof"
     rm -rf "$EXTRACTED_FIRM_DIR/system/system/etc/init/boot-image.prof"
     rm -rf "$EXTRACTED_FIRM_DIR/system/system/hidden"
