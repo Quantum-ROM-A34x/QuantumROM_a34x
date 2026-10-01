@@ -4,9 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       STOCK_DEVICE:
-        description: "Your own device model or None"
+        description: "Your own stock device model or None"
         required: true
-        default: "SM-A225F"
+        default: "SM-A346E"
+
+      STOCK_DEVICE_CSC_OR_DOWNLOAD_LINK:
+        description: "Input stock device CSC code or direct download link."
+        required: true
+        default: "INS"
+
+      STOCK_FW_VERSION:
+        description: "Specific Stock Samsung firmware version (PDA/CSC/MODEM) OR (AP/CSC/CP)"
+        required: false
 
       USE_UI_8_TETHERING_APEX:
         description: "Set True if your kernel BPF version is 5.4 (lower than 5.10)."
@@ -16,15 +25,15 @@ on:
       TARGET_DEVICE:
         description: "TARGET_DEVICE_MODEL."
         required: true
-        default: "SM-A346E"
+        default: "SM-S711B"
 
       TARGET_DEVICE_CSC_OR_DOWNLOAD_LINK:
         description: "Input target device CSC code or direct download link."
         required: true
-        default: "BKD"
+        default: "INS"
 
       TARGET_FW_VERSION:
-        description: "Specific Samsung firmware version (PDA/CSC/MODEM) OR (AP/CSC/CP)"
+        description: "Specific Target Samsung firmware version (PDA/CSC/MODEM) OR (AP/CSC/CP)"
         required: false
 
       OUTPUT_FILESYSTEM:
@@ -48,7 +57,7 @@ on:
         default: "True"
 
       ADD_CHINA_SMART_MANAGER:
-        description: "Add chismart manager (True/False)"
+        description: "Add china smart manager (True/False)"
         required: true
         default: "True"
 
@@ -78,7 +87,7 @@ on:
         default: "True"
 
       COMPRESS_IMG:
-        description: "Compress img to xz or br (bortli)"
+        description: "Compress img to xz or br (brotli)"
         required: false
         default: ""
 
@@ -95,10 +104,14 @@ jobs:
       - name: Set variables
         run: |
           echo "STOCK_DEVICE=${{ inputs.STOCK_DEVICE }}" | tee -a "$GITHUB_ENV"
+          echo "STOCK_DEVICE_CSC_OR_DOWNLOAD_LINK=${{ inputs.STOCK_DEVICE_CSC_OR_DOWNLOAD_LINK }}" | tee -a "$GITHUB_ENV"
+          echo "STOCK_FW_VERSION=${{ inputs.STOCK_FW_VERSION }}" | tee -a "$GITHUB_ENV"
+
           echo "TARGET_DEVICE=${{ inputs.TARGET_DEVICE }}" | tee -a "$GITHUB_ENV"
           echo "TARGET_DEVICE_CSC_OR_DOWNLOAD_LINK=${{ inputs.TARGET_DEVICE_CSC_OR_DOWNLOAD_LINK }}" | tee -a "$GITHUB_ENV"
           echo "TARGET_FW_VERSION=${{ inputs.TARGET_FW_VERSION }}" | tee -a "$GITHUB_ENV"
 
+          echo "STOCK_FIRM_DIR=$(pwd)/FW/${{ inputs.STOCK_DEVICE }}" | tee -a "$GITHUB_ENV"
           echo "FIRM_DIR=$(pwd)/FW/${{ inputs.TARGET_DEVICE }}" | tee -a "$GITHUB_ENV"
           echo "OUT_DIR=$(pwd)/OUT" | tee -a "$GITHUB_ENV"
           echo "WORK_DIR=$(pwd)/WORK" | tee -a "$GITHUB_ENV"
@@ -128,16 +141,14 @@ jobs:
           source "$(pwd)/scripts/git_utils.sh"
 
           if [ "$STOCK_DEVICE" != "None" ]; then
-              if ! curl -fsSL -H "Accept: application/vnd.github+json" \
-                  "https://api.github.com/repos/$REPO/contents/$STOCK_DEVICE?ref=$BRANCH" >/dev/null; then
-
-                echo "❌ Unsupported: Device '$STOCK_DEVICE' not found in $REPO/$BRANCH"
-                exit 1
+              if curl -fsSL -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/$REPO/contents/$STOCK_DEVICE?ref=$BRANCH" >/dev/null 2>&1; then
+                echo "✅ Device supported in remote repo: $STOCK_DEVICE"
+                GIT_SPARSE_DOWNLOAD "SN-Abdullah-Al-Noman/QuantumROM" "Devices" "$STOCK_DEVICE" \
+                    "$(pwd)/QuantumROM/Devices/$STOCK_DEVICE"
+              else
+                echo "ℹ️ Device '$STOCK_DEVICE' not in remote $REPO/$BRANCH; will extract directly from downloaded stock firmware."
               fi
-
-              echo "✅ Device supported: $STOCK_DEVICE"
-              GIT_SPARSE_DOWNLOAD "SN-Abdullah-Al-Noman/QuantumROM" "Devices" "$STOCK_DEVICE" \
-                  "$(pwd)/QuantumROM/Devices/$STOCK_DEVICE"
           else
               echo "ℹ️ STOCK_DEVICE is set to None."
           fi
@@ -147,39 +158,64 @@ jobs:
         run: |
           FREE_GB=$(df -BG "$GITHUB_WORKSPACE" | awk 'NR==2 {gsub("G","",$4); print $4}')
           echo "Free space: ${FREE_GB} GB"
-          echo "enough=$([ "$FREE_GB" -ge 50 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "enough=$([ "$FREE_GB" -ge 75 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Remove unnecessary files.
         if: steps.disk.outputs.enough == 'false'
         uses: rokibhasansagar/slimhub_actions@v25.42.5
 
-      - name: Download firmware ▶️ ${{ inputs.TARGET_DEVICE }} - ${{ inputs.TARGET_DEVICE_CSC_OR_DOWNLOAD_LINK }}
-        run: |
-          source "$(pwd)/scripts/QuantumRom.sh"
-          DOWNLOAD_FIRMWARE "$TARGET_DEVICE" "$TARGET_DEVICE_CSC_OR_DOWNLOAD_LINK" "$FIRM_DIR" "$TARGET_FW_VERSION"
-
       - name: Install Dependencies.
         run: |
           sudo apt update
           sudo apt install -y p7zip-full lz4 liblz4-1 liblz4-dev libzstd1 libzstd-dev build-essential android-sdk-libsparse-utils linux-modules-extra-$(uname -r) \
-              f2fs-tools fuse2fs fuse e2fsprogs python3 python3-pip zipalign unzip openjdk-21-jdk jq perl xxd kmod erofs-utils curl wget curl wget brotli pv
+              f2fs-tools fuse2fs fuse e2fsprogs python3 python3-pip zipalign unzip openjdk-21-jdk jq perl xxd kmod erofs-utils curl wget brotli pv protobuf-compiler libprotobuf-dev bc
           sudo modprobe f2fs || true
-          git clone https://github.com/SN-Abdullah-Al-Noman/GoFileDownloader.git
-          cd GoFileDownloader
-          pip install -r requirements.txt
-          mkdir -p "$FIRM_DIR" "$OUT_DIR" "$WORK_DIR"
+          git clone https://github.com/SN-Abdullah-Al-Noman/GoFileDownloader.git || true
+          if [ -d "GoFileDownloader" ]; then
+              cd GoFileDownloader && pip install -r requirements.txt && cd ..
+          fi
+          mkdir -p "$STOCK_FIRM_DIR" "$FIRM_DIR" "$OUT_DIR" "$WORK_DIR"
 
-      - name: Extract firmware
+      - name: Download & Extract Stock Firmware ▶️ ${{ inputs.STOCK_DEVICE }} - ${{ inputs.STOCK_DEVICE_CSC_OR_DOWNLOAD_LINK }}
+        if: inputs.STOCK_DEVICE != 'None'
+        run: |
+          source "$(pwd)/scripts/QuantumRom.sh"
+          DOWNLOAD_FIRMWARE "$STOCK_DEVICE" "$STOCK_DEVICE_CSC_OR_DOWNLOAD_LINK" "$STOCK_FIRM_DIR" "$STOCK_FW_VERSION"
+          EXTRACT_FIRMWARE "$STOCK_FIRM_DIR"
+          EXTRACT_SUPER_IMG "$STOCK_FIRM_DIR"
+
+          rm -rf "$STOCK_FIRM_DIR"/*_b.img
+          for img in "$STOCK_FIRM_DIR"/*_a.img; do
+              [ -f "$img" ] || continue
+              mv -f "$img" "${img%_a.img}.img"
+          done
+
+          find "$STOCK_FIRM_DIR" -mindepth 1 -maxdepth 1 \
+              ! -name 'product.img' \
+              ! -name 'system.img' \
+              ! -name 'system_ext.img' \
+              -exec rm -rf {} +
+
+          sudo bash -c 'source "'"$(pwd)"'/scripts/QuantumRom.sh"; EXTRACT_FIRMWARE_IMG "'"$STOCK_FIRM_DIR"'" "all"'
+          sudo chown -R "$(id -u):$(id -g)" "$STOCK_FIRM_DIR" && chmod -R u+rwX "$STOCK_FIRM_DIR"
+          rm -rf "$STOCK_FIRM_DIR"/*.img
+
+      - name: Download Target Firmware ▶️ ${{ inputs.TARGET_DEVICE }} - ${{ inputs.TARGET_DEVICE_CSC_OR_DOWNLOAD_LINK }}
+        run: |
+          source "$(pwd)/scripts/QuantumRom.sh"
+          DOWNLOAD_FIRMWARE "$TARGET_DEVICE" "$TARGET_DEVICE_CSC_OR_DOWNLOAD_LINK" "$FIRM_DIR" "$TARGET_FW_VERSION"
+
+      - name: Extract Target firmware
         run: |
           source "$(pwd)/scripts/QuantumRom.sh"
           EXTRACT_FIRMWARE "$FIRM_DIR"
 
-      - name: Extract super.img
+      - name: Extract Target super.img
         run: |
           source "$(pwd)/scripts/QuantumRom.sh"
           EXTRACT_SUPER_IMG "$FIRM_DIR"
 
-      - name: Extract firmware img
+      - name: Extract Target firmware img
         run: |
           rm -rf "$FIRM_DIR"/*_b.img
 
@@ -217,18 +253,22 @@ jobs:
               DEBLOAT_SAMSUNG_DEX_APPS "$FIRM_DIR"
           fi
 
-      - name: Apply stock device configuration
+      - name: Apply stock device configuration & MediaTek Port Sync
         run: |
           source "$(pwd)/scripts/debloat.sh"
           source "$(pwd)/scripts/QuantumRom.sh"
 
           if [ "$STOCK_DEVICE" != "None" ]; then
-              APPLY_STOCK_CONFIG "$STOCK_DEVICE" "$FIRM_DIR"
+              APPLY_STOCK_CONFIG "$STOCK_DEVICE" "$FIRM_DIR" "$STOCK_FIRM_DIR"
+              INSTALL_FRAMEWORK "$APKTOOL" "$FIRM_DIR/system/system/framework/framework-res.apk"
               DECOMPILE "$APKTOOL" "$FIRM_DIR/system/system/framework" "$FIRM_DIR/system/system/framework/ssrm.jar" "$WORK_DIR"
               PATCH_SSRM "$WORK_DIR/ssrm"
               RECOMPILE "$APKTOOL" "$FIRM_DIR/system/system/framework" "$WORK_DIR/ssrm" "$WORK_DIR"
               mv -f "$WORK_DIR/ssrm.jar" "$FIRM_DIR/system/system/framework/"
           fi
+
+          # Free up disk space after syncing Stock A346E blobs
+          rm -rf "$STOCK_FIRM_DIR"
 
       - name: Add china smart manager - ${{ inputs.ADD_CHINA_SMART_MANAGER }}
         run: |
@@ -254,14 +294,13 @@ jobs:
               APPLY_CUSTOM_FEATURES "$FIRM_DIR"
           fi
 
-      - name: Patch flag secure and secure folder - ${{ inputs.PATCH_FLAG_SECURE }} - ${{ inputs.PATCH_SECURE_FOLDER }}
+      - name: Patch Services, Framework & SecSettings (Flag Secure, Secure Folder, MTK PictureQuality, Outdoor Mode)
         run: |
           source "$(pwd)/scripts/QuantumRom.sh"
 
-          if [ "$PATCH_FLAG_SECURE" = "True" ] || [ "$PATCH_SECURE_FOLDER" = "True" ]; then
-              INSTALL_FRAMEWORK "$APKTOOL" "$FIRM_DIR/system/system/framework/framework-res.apk"
-              DECOMPILE "$APKTOOL" "$FIRM_DIR/system/system/framework" "$FIRM_DIR/system/system/framework/services.jar" "$WORK_DIR"
-          fi
+          INSTALL_FRAMEWORK "$APKTOOL" "$FIRM_DIR/system/system/framework/framework-res.apk"
+          DECOMPILE "$APKTOOL" "$FIRM_DIR/system/system/framework" "$FIRM_DIR/system/system/framework/services.jar" "$WORK_DIR"
+          DECOMPILE "$APKTOOL" "$FIRM_DIR/system/system/framework" "$FIRM_DIR/system/system/framework/framework.jar" "$WORK_DIR"
 
           if [ "$PATCH_FLAG_SECURE" = "True" ]; then
               PATCH_FLAG_SECURE "$FIRM_DIR" "$WORK_DIR/services"
@@ -271,12 +310,28 @@ jobs:
               PATCH_SECURE_FOLDER "$FIRM_DIR" "$WORK_DIR/services"
           fi
 
+          PATCH_PRIVATE_SHARE "$WORK_DIR/services"
+          DISABLE_SIGNATURE_VERIFICATION "$WORK_DIR/services"
+          PATCH_KNOX_GUARD "$WORK_DIR/services"
+          PATCH_CUSTOM_PLATFORM_SIGNATURE "$WORK_DIR/services"
+          PATCH_MTK_PICTURE_QUALITY "$WORK_DIR/framework" "$WORK_DIR/services"
+
+          RECOMPILE "$APKTOOL" "$FIRM_DIR/system/system/framework" "$WORK_DIR/services" "$WORK_DIR"
+          RECOMPILE "$APKTOOL" "$FIRM_DIR/system/system/framework" "$WORK_DIR/framework" "$WORK_DIR"
+
           if [ -f "$WORK_DIR/services.jar" ]; then
               mv -f "$WORK_DIR/services.jar" "$FIRM_DIR/system/system/framework/"
               echo "✅ services.jar moved to rom."
           fi
 
-      - name: Patch bluetooth library- ${{ inputs.PATCH_BLUETOOTH_LIBRARY }}
+          if [ -f "$WORK_DIR/framework.jar" ]; then
+              mv -f "$WORK_DIR/framework.jar" "$FIRM_DIR/system/system/framework/"
+              echo "✅ framework.jar moved to rom."
+          fi
+
+          PATCH_SECSETTINGS_OUTDOOR_MODE "$APKTOOL" "$FIRM_DIR" "$WORK_DIR"
+
+      - name: Patch bluetooth library - ${{ inputs.PATCH_BLUETOOTH_LIBRARY }}
         run: |
           source "$(pwd)/scripts/QuantumRom.sh"
 
@@ -284,7 +339,7 @@ jobs:
               PATCH_BT_LIB "$FIRM_DIR" "$WORK_DIR"
           fi
 
-      - name: Apply others features and patch
+      - name: Apply SELinux and security patches
         run: |
           source "$(pwd)/scripts/QuantumRom.sh"
           PATCH_SELINUX "$FIRM_DIR"
@@ -295,7 +350,7 @@ jobs:
           source "$(pwd)/scripts/QuantumRom.sh"
           BUILD_IMG "$FIRM_DIR" "all" "$OUTPUT_FILESYSTEM" "$OUT_DIR"
 
-      - name: Compress all .img & make zip file before upload - - ${{ inputs.COMPRESS_IMG }}
+      - name: Compress all .img & make zip file before upload - ${{ inputs.COMPRESS_IMG }}
         run: |
           echo "BUILD_TIME=$(TZ='Asia/Dhaka' date '+%Y-%m-%d %I:%M:%S %p UTC+6')" | tee -a "$GITHUB_ENV"
           ZIP_NAME="${{ inputs.TARGET_DEVICE }}_Port_For_${{ inputs.STOCK_DEVICE }}.zip"
@@ -312,7 +367,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
           if [ "$COMPRESS_IMG" = "xz" ]; then
-              echo "Compressing all .img files to .xz (level 9)..."
+              echo "Compressing all .img files to .xz (level 5)..."
               for img in "$OUT_DIR"/*.img; do
                   [ -f "$img" ] || continue
                   echo "Compressing $img"
@@ -320,16 +375,14 @@ jobs:
               done
 
           elif [ "$COMPRESS_IMG" = "br" ]; then
-              echo "Compressing all .img files to .br (Brotli level 11)..."
-
+              echo "Compressing all .img files to .br (Brotli level 5)..."
               for img in "$OUT_DIR"/*.img; do
                   [ -f "$img" ] || continue
-
                   echo "Compressing $img"
                   pv -pterab "$img" | brotli -q 5 > "${img}.br"
                   rm -f "$img"
               done
-              fi
+          fi
 
           echo "Creating zip: $ZIP_NAME"
           7z a -tzip "$ZIP_PATH" "$OUT_DIR"/* -mx=5
