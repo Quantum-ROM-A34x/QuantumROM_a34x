@@ -1,6 +1,5 @@
 #!/bin/bash
 
-
 # GENERAL / SYSTEM / BLOAT
 DEBLOAT_APPS=(
 "HMT" "PaymentFramework" "FactoryCameraFB"
@@ -18,6 +17,7 @@ DEBLOAT_APPS=(
 "ParentalCare" "PhotoTable" "SmartReminder" "VideoEditorLite_Dream_N"
 "VoiceAccess" "VTCameraSetting"
 "WebManual" "WifiGuider" "AutomationTest_FB" "FactoryTestProvider"
+"WifiRROverlayAppLls"
 )
 
 # =========================
@@ -62,6 +62,25 @@ SAMSUNG_APPS=(
 )
 
 # =========================
+# SAMSUNG BIXBY & DEX APPS
+# =========================
+SAMSUNG_BIXBY_APPS=(
+"Bixby"
+"BixbyAgent"
+"BixbyService"
+"BixbyVisionFramework3.5"
+"SystemUIBixby2"
+"BixbyWakeup"
+)
+
+SAMSUNG_DEX_APPS=(
+"DesktopModeUiService"
+"KnoxDesktopLauncher"
+"SamsungDeXHome"
+"WirelessDeX"
+)
+
+# =========================
 # SAMSUNG AI / SMART
 # =========================
 SAMSUNG_AI=(
@@ -72,7 +91,6 @@ SAMSUNG_AI=(
 # GOOGLE APPS
 # =========================
 GOOGLE_APPS=(
-
 # Removed Google Apps
 "Duo"
 "DuoStub"
@@ -232,7 +250,7 @@ DEBLOAT_SAMSUNG_BIXBY_APPS() {
         return 1
     fi
 
-    echo -e "Debloating samssung bixby apps."
+    echo -e "Debloating samsung bixby apps."
     KICK "$EXTRACTED_FIRM_DIR" "${SAMSUNG_BIXBY_APPS[@]}"
 }
 
@@ -251,7 +269,7 @@ DEBLOAT_SAMSUNG_DEX_APPS() {
         return 1
     fi
 
-    echo -e "Debloating samssung dex apps."
+    echo -e "Debloating samsung dex apps."
     KICK "$EXTRACTED_FIRM_DIR" "${SAMSUNG_DEX_APPS[@]}"
 }
 
@@ -287,6 +305,7 @@ DEBLOAT() {
 
     echo -e "- Deleting unnecessary files and folders."
     rm -rf "$EXTRACTED_FIRM_DIR/system/system/app"/SamsungTTS*
+    rm -rf "$EXTRACTED_FIRM_DIR/system/system/etc/public.libraries-edensdk.samsung.txt"
     rm -rf "$EXTRACTED_FIRM_DIR/system/system/etc/init/boot-image.bprof"
     rm -rf "$EXTRACTED_FIRM_DIR/system/system/etc/init/boot-image.prof"
     rm -rf "$EXTRACTED_FIRM_DIR/system/system/hidden"
