@@ -166,8 +166,10 @@ REMOVE_LINE() {
     local LINE="$1"
     local FILE="$2"
 
+    [ -f "$FILE" ] || return 0
     echo -e "- Deleting $LINE from $FILE"
-    grep -vxF "$LINE" "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
+    grep -vxF "$LINE" "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE" || rm -f "$FILE.tmp"
+    return 0
 }
 
 
@@ -204,11 +206,10 @@ GET_PROP() {
     esac
 
     if [ ! -f "$FILE" ]; then
-        echo -e "- File not found: $FILE"
         return 0
     fi
 
-    local VALUE=$(grep -m1 "^${PROP}=" "$FILE" | cut -d'=' -f2-)
+    local VALUE=$(grep -m1 "^${PROP}=" "$FILE" | cut -d'=' -f2- | tr -d '\r')
 
     if [ -z "$VALUE" ]; then
         return 0
@@ -216,7 +217,6 @@ GET_PROP() {
 
     echo -e "$VALUE"
 }
-
 
 GET_FF_VALUE() {
     local KEY="$1"
@@ -608,6 +608,7 @@ DISABLE_FDE() {
     done
 }
 
+
 ###################################################################################################
 # PART 2: APKTOOL, SMALI PATCHING, MTK PICTURE QUALITY, CUSTOM SIGNATURES & BLUETOOTH
 ###################################################################################################
@@ -622,6 +623,7 @@ INSTALL_FRAMEWORK() {
 
     local APKTOOL="$1"
     local framework_apk="$2"
+    local FRAME_CACHE_DIR="${WORK_DIR:-$QT_DIR/WORK}/framework_cache"
 
     echo -e "Installing: $framework_apk"
 
@@ -630,15 +632,16 @@ INSTALL_FRAMEWORK() {
         return 0
     fi
 
-    java -jar "$APKTOOL" install-framework "$framework_apk"
+    mkdir -p "$FRAME_CACHE_DIR"
+    java -jar "$APKTOOL" install-framework --frame-path "$FRAME_CACHE_DIR" "$framework_apk"
 }
 
 
 DECOMPILE() {
     echo " "
 
-    if [ "$#" -ne 4 ]; then
-        echo -e "Usage: DECOMPILE <APKTOOL_JAR_DIR> <FRAMEWORK_DIR> <FILE> <DECOMPILE_DIR>"
+    if [ "$#" -lt 4 ]; then
+        echo -e "Usage: DECOMPILE <APKTOOL_JAR_DIR> <FRAMEWORK_DIR> <FILE> <DECOMPILE_DIR> [EXTRA_ARGS]"
         return 1
     fi
 
@@ -646,8 +649,10 @@ DECOMPILE() {
     local FRAMEWORK_DIR="$2"
     local FILE="$3"
     local DECOMPILE_DIR="$4"
+    local EXTRA_ARGS="${5:-}"
     local BASENAME="$(basename "${FILE%.*}")"
     local OUT="$DECOMPILE_DIR/$BASENAME"
+    local FRAME_CACHE_DIR="${WORK_DIR:-$QT_DIR/WORK}/framework_cache"
 
     echo -e "Decompiling: $FILE in: $DECOMPILE_DIR"
 
@@ -656,8 +661,9 @@ DECOMPILE() {
         return 1
     fi
 
+    mkdir -p "$FRAME_CACHE_DIR"
     rm -rf "$OUT"
-    java -jar "$APKTOOL" d --force --frame-path "$FRAMEWORK_DIR" --match-original "$FILE" -o "$OUT"
+    java -jar "$APKTOOL" d --force --frame-path "$FRAME_CACHE_DIR" --match-original $EXTRA_ARGS "$FILE" -o "$OUT"
 }
 
 
@@ -673,6 +679,7 @@ RECOMPILE() {
     local FRAMEWORK_DIR="$2"
     local DECOMPILED_DIR="$3"
     local RECOMPILE_DIR="$4"
+    local FRAME_CACHE_DIR="${WORK_DIR:-$QT_DIR/WORK}/framework_cache"
     
     echo -e "Recompiling: $DECOMPILED_DIR"
 
@@ -686,8 +693,9 @@ RECOMPILE() {
     local ext="${org_file_name##*.}"
     local built_file="$RECOMPILE_DIR/${name}.$ext"
 
-    java -jar "$APKTOOL" b "$DECOMPILED_DIR" --copy-original --frame-path "$FRAMEWORK_DIR" -o "$built_file"
+    java -jar "$APKTOOL" b "$DECOMPILED_DIR" --copy-original --frame-path "$FRAME_CACHE_DIR" -o "$built_file"
     rm -rf "$DECOMPILED_DIR"
+    rm -f "$FRAMEWORK_DIR/1.apk"
 }
 
 
@@ -699,15 +707,22 @@ REPLACE_SMALI_METHOD() {
     echo -e "Patching: $FILE"
     echo -e "- Method: $METHOD_NAME"
 
-    if [ ! -f "$FILE" ] || ! grep -Fq "$METHOD_NAME" "$FILE"; then
-        echo -e "- Warning- Method: $METHOD_NAME not found in: $FILE"
+    if [ ! -f "$FILE" ]; then
+        echo -e "- Warning: File not found: $FILE"
         return 0
     fi
 
-    local METHOD_KEY=$(echo "$METHOD_NAME" | sed -E 's/.* ([^ ]+\().*/\1/')
+    # Extract method signature (e.g. isAvailable()Z) so it matches with or without 'final'/'blacklist'
+    local METHOD_SIG=$(echo "$METHOD_NAME" | awk '{print $NF}')
+    local ESCAPED_SIG=$(printf '%s' "$METHOD_SIG" | sed 's/[][()\.^$*+?]/\\&/g')
+
+    if ! grep -Eq "^[[:space:]]*\.method.* ${ESCAPED_SIG}" "$FILE"; then
+        echo -e "- Warning- Method: $METHOD_SIG not found in: $FILE"
+        return 0
+    fi
 
     sed -i "
-/^[[:space:]]*\.method.*$METHOD_KEY/,/^[[:space:]]*\.end method/{
+/^[[:space:]]*\.method.* ${ESCAPED_SIG}/,/^[[:space:]]*\.end method/{
     /^[[:space:]]*\.method/{
         p
         r /dev/stdin
@@ -794,57 +809,16 @@ PATCH_FLAG_SECURE() {
     fi
 
     local ANDROID_VERSION=$(GET_PROP "$EXTRACTED_FIRM_DIR" "system" "ro.system.build.version.release")
-
     echo "Android version: $ANDROID_VERSION"
 
-    case "$ANDROID_VERSION" in
-        10)
-            FILE_3="${WORK_DIR}/smali/com/android/server/devicepolicy/DevicePolicyManagerService.smali"
-            METHOD_NAME_3=".method public getScreenCaptureDisabled(Landroid/content/ComponentName;I)Z"
-            ;;
-        11)
-            FILE_1="${WORK_DIR}/smali_classes2/com/android/server/wm/WindowState.smali"
-            METHOD_NAME_1=".method isSecureLocked()Z"
-            ;;
-        12)
-            FILE_1="${WORK_DIR}/smali_classes3/com/android/server/wm/WindowState.smali"
-            METHOD_NAME_1=".method isSecureLocked()Z"
-            ;;
-        13)
-            FILE_1="${WORK_DIR}/smali_classes3/com/android/server/wm/WindowState.smali"
-            METHOD_NAME_1=".method public isSecureLocked()Z"
-            ;;
-        14)
-            FILE_1="${WORK_DIR}/smali_classes3/com/android/server/wm/WindowState.smali"
-            METHOD_NAME_1=".method public isSecureLocked()Z"
-            FILE_2="${WORK_DIR}/smali_classes3/com/android/server/wm/WindowManagerService.smali"
-            METHOD_NAME_2=".method public notifyScreenshotListeners(I)Ljava/util/List;"
-            ;;
-        15|16|17)
-            FILE_1="${WORK_DIR}/smali_classes2/com/android/server/wm/WindowState.smali"
-            METHOD_NAME_1=".method public final isSecureLocked()Z"
-            FILE_2="${WORK_DIR}/smali_classes2/com/android/server/wm/WindowManagerService.smali"
-            METHOD_NAME_2=".method public final notifyScreenshotListeners(I)Ljava/util/List;"
-            FILE_3="${WORK_DIR}/smali/com/android/server/devicepolicy/DevicePolicyManagerService.smali"
-            METHOD_NAME_3=".method public final getScreenCaptureDisabled(Landroid/content/ComponentName;IZ)Z"
-            ;;
-        *)
-            echo "- Unsupported Android version: $ANDROID_VERSION"
-            return 1
-            ;;
-    esac
+    FILE_1=$(find "$WORK_DIR" -type f -name "WindowState.smali" | head -n 1)
+    FILE_2=$(find "$WORK_DIR" -type f -name "WindowManagerService.smali" | head -n 1)
+    FILE_3=$(find "$WORK_DIR" -type f -name "DevicePolicyManagerService.smali" | head -n 1)
 
-    if [[ -v FILE_1 ]]; then
-        REPLACE_SMALI_METHOD "$FILE_1" "$METHOD_NAME_1" "$REPLACE_BODY_1"
-    fi
-
-    if [[ -v FILE_2 ]]; then
-        REPLACE_SMALI_METHOD "$FILE_2" "$METHOD_NAME_2" "$REPLACE_BODY_2"
-    fi
-
-    if [[ -v FILE_3 ]]; then
-        REPLACE_SMALI_METHOD "$FILE_3" "$METHOD_NAME_3" "$REPLACE_BODY_1"
-    fi
+    [ -n "$FILE_1" ] && REPLACE_SMALI_METHOD "$FILE_1" "isSecureLocked()Z" "$REPLACE_BODY_1"
+    [ -n "$FILE_2" ] && REPLACE_SMALI_METHOD "$FILE_2" "notifyScreenshotListeners(I)Ljava/util/List;" "$REPLACE_BODY_2"
+    [ -n "$FILE_3" ] && REPLACE_SMALI_METHOD "$FILE_3" "getScreenCaptureDisabled(Landroid/content/ComponentName;IZ)Z" "$REPLACE_BODY_1"
+    return 0
 }
 
 
@@ -868,76 +842,65 @@ PATCH_SECURE_FOLDER() {
 
     local EXTRACTED_FIRM_DIR="$1"
     local WORK_DIR="$2"
-    local ANDROID_VERSION=$(GET_PROP "$EXTRACTED_FIRM_DIR" "system" "ro.system.build.version.release")
+    local FILE_1=$(find "$WORK_DIR" -type f -name "DarManagerService.smali" | head -n 1)
 
-    echo "Android version: $ANDROID_VERSION"
-
-    case "$ANDROID_VERSION" in
-        12|13|14)
-            FILE_1="${WORK_DIR}/smali_classes2/com/android/server/knox/dar/DarManagerService.smali"
-            METHOD_NAME_1=".method public isDeviceRootKeyInstalled()Z"
-            METHOD_NAME_2=".method public isKnoxKeyInstallable()Z"
-            REPLACE_SMALI_METHOD "$FILE_1" "$METHOD_NAME_1" "$REPLACE_BODY_1"
-            REPLACE_SMALI_METHOD "$FILE_1" "$METHOD_NAME_2" "$REPLACE_BODY_1"
-            ;;
-        15|16|17)
-            FILE_1="${WORK_DIR}/smali/com/android/server/knox/dar/DarManagerService.smali"
-            METHOD_NAME_1=".method public final isDeviceRootKeyInstalled()Z"
-            METHOD_NAME_2=".method public final isKnoxKeyInstallable()Z"
-            REPLACE_SMALI_METHOD "$FILE_1" "$METHOD_NAME_1" "$REPLACE_BODY_1"
-            REPLACE_SMALI_METHOD "$FILE_1" "$METHOD_NAME_2" "$REPLACE_BODY_1"
-            ;;
-        *)
-            echo "- Unsupported Android version: $ANDROID_VERSION"
-            return 1
-            ;;
-    esac
+    if [ -n "$FILE_1" ]; then
+        REPLACE_SMALI_METHOD "$FILE_1" "isDeviceRootKeyInstalled()Z" "$REPLACE_BODY_1"
+        REPLACE_SMALI_METHOD "$FILE_1" "isKnoxKeyInstallable()Z" "$REPLACE_BODY_1"
+    fi
+    return 0
 }
 
 
 PATCH_PRIVATE_SHARE() {
     echo " "
 
-    if [ "$#" -ne 1 ]; then
-        echo -e "Usage: ${FUNCNAME[0]} <EXTRACTED_SERVICES_DIRECTORY>"
+    if [ "$#" -lt 1 ]; then
+        echo -e "Usage: ${FUNCNAME[0]} <EXTRACTED_SERVICES_OR_WORK_DIRECTORY>"
         return 1
     fi
 
     echo -e "Patching private share."
-    
-    local FILE="${1}/smali/com/samsung/android/security/keystore/AttestParameterSpec.smali"
-    local METHOD_NAME=".method public isVerifiableIntegrity()Z"
-    local REPLACE_BODY='
+    local SEARCH_DIR="$(dirname "$1")"
+    local FILE=$(find "$SEARCH_DIR" -type f -name "AttestParameterSpec.smali" | head -n 1)
+
+    if [ -n "$FILE" ]; then
+        local REPLACE_BODY='
     .locals 1
  
     const/4 v0, 0x1
  
     return v0
     '
-    REPLACE_SMALI_METHOD "$FILE" "$METHOD_NAME" "$REPLACE_BODY"
+        REPLACE_SMALI_METHOD "$FILE" "isVerifiableIntegrity()Z" "$REPLACE_BODY"
+    fi
+    return 0
 }
 
 
 DISABLE_SIGNATURE_VERIFICATION() {
     echo " "
 
-    if [ "$#" -ne 1 ]; then
-        echo -e "Usage: ${FUNCNAME[0]} <EXTRACTED_SERVICES_DIRECTORY>"
+    if [ "$#" -lt 1 ]; then
+        echo -e "Usage: ${FUNCNAME[0]} <EXTRACTED_SERVICES_OR_WORK_DIRECTORY>"
         return 1
     fi
 
     echo -e "Disabling signature verification."
+    local SEARCH_DIR="$(dirname "$1")"
+    local FILE=$(find "$SEARCH_DIR" -type f -name "ApkSignatureVerifier.smali" | head -n 1)
 
-    local FILE="${1}/smali_classes4/android/util/apk/ApkSignatureVerifier.smali"
-    local METHOD_NAME=".method public static blacklist getMinimumSignatureSchemeVersionForTargetSdk(I)I"
-    local REPLACE_BODY='
+    if [ -n "$FILE" ]; then
+        local REPLACE_BODY='
     .locals 1
 
     const/4 v0, 0x1
  
     return v0
     '
-    REPLACE_SMALI_METHOD "$FILE" "$METHOD_NAME" "$REPLACE_BODY"
+        REPLACE_SMALI_METHOD "$FILE" "getMinimumSignatureSchemeVersionForTargetSdk(I)I" "$REPLACE_BODY"
+    fi
+    return 0
 }
 
 
@@ -950,7 +913,7 @@ PATCH_KNOX_GUARD() {
     fi
 
     echo -e "Patching knox guard."
-    local FILE="${1}/smali_classes2/com/samsung/android/knoxguard/service/KnoxGuardSeService.smali"
+    local FILE=$(find "$1" -type f -name "KnoxGuardSeService.smali" | head -n 1)
     local METHOD_NAME_1=".method public constructor <init>(Landroid/content/Context;)V"
     local REPLACE_BODY_1='
     .locals 0
@@ -969,8 +932,9 @@ PATCH_KNOX_GUARD() {
 
     throw p0
     '
-    REPLACE_SMALI_METHOD "$FILE" "$METHOD_NAME_1" "$REPLACE_BODY_1"
+    [ -n "$FILE" ] && REPLACE_SMALI_METHOD "$FILE" "$METHOD_NAME_1" "$REPLACE_BODY_1"
     rm -rf "$FIRM_DIR/system/system/priv-app/KnoxGuard"
+    return 0
 }
 
 
@@ -987,12 +951,10 @@ PATCH_MTK_PICTURE_QUALITY() {
     echo -e "Applying MediaTek PictureQuality patches to framework.jar and services.jar..."
 
     # 1. Patch framework.jar (SemDisplayQualityFeature.smali)
-    local FW_PATCH_FILE="${QT_DIR}/patches/framework.jar/0001-Implement-MTK-PictureQuality.patch"
     local DQ_FEAT_SMALI=$(find "$FW_WORK_DIR" -type f -name "SemDisplayQualityFeature.smali" | head -n 1)
 
-    if [ -f "$FW_PATCH_FILE" ]; then
-        patch -p1 -d "$FW_WORK_DIR" < "$FW_PATCH_FILE" || true
-    elif [ -n "$DQ_FEAT_SMALI" ] && [ -f "$DQ_FEAT_SMALI" ]; then
+    if [ -n "$DQ_FEAT_SMALI" ] && [ -f "$DQ_FEAT_SMALI" ]; then
+        echo "- Updating $DQ_FEAT_SMALI to MTK platform..."
         cat << 'EOF' > "$DQ_FEAT_SMALI"
 .class public Lcom/samsung/android/displayquality/SemDisplayQualityFeature;
 .super Ljava/lang/Object;
@@ -1063,13 +1025,11 @@ EOF
     fi
 
     # 2. Patch services.jar (PictureQualityHelper.smali & SemDisplayQuality.smali)
-    local SRV_PATCH_FILE="${QT_DIR}/patches/services.jar/0001-Implement-MTK-PictureQuality.patch"
     local SEM_DQ_SMALI=$(find "$SERVICES_WORK_DIR" -type f -name "SemDisplayQuality.smali" | head -n 1)
 
-    if [ -f "$SRV_PATCH_FILE" ]; then
-        patch -p1 -d "$SERVICES_WORK_DIR" < "$SRV_PATCH_FILE" || true
-    elif [ -n "$SEM_DQ_SMALI" ]; then
+    if [ -n "$SEM_DQ_SMALI" ] && [ -f "$SEM_DQ_SMALI" ]; then
         local DQ_DIR="$(dirname "$SEM_DQ_SMALI")"
+        echo "- Injecting PictureQualityHelper.smali and updating SemDisplayQuality.smali in $DQ_DIR..."
         cat << 'EOF' > "$DQ_DIR/PictureQualityHelper.smali"
 .class public Lcom/samsung/android/displayquality/PictureQualityHelper;
 .super Ljava/lang/Object;
@@ -1232,6 +1192,249 @@ EOF
     return-void
 .end method
 EOF
+
+        cat << 'EOF' > "$SEM_DQ_SMALI"
+.class public Lcom/samsung/android/displayquality/SemDisplayQuality;
+.super Lcom/samsung/android/displayquality/SemDisplayQualityAP;
+.source "SemDisplayQuality.java"
+
+# static fields
+.field private static final AAL_DRE_ON:I = 0x4
+.field private static final AAL_ESS_DRE_ON:I = 0x6
+.field private static final AAL_ESS_ON:I = 0x2
+.field private static final AAL_OFF:I = 0x0
+.field private static final PICTURE_MODE_NATURAL:I = 0x0
+.field private static final PICTURE_MODE_VIVID:I = 0x1
+.field private static final PROP_AAL_SUPPORT:Ljava/lang/String; = "ro.vendor.mtk_aal_support"
+.field private static final PROP_PQ_SUPPORT:Ljava/lang/String; = "ro.vendor.mtk_pq_support"
+.field private static final SUPPORTED:Ljava/lang/String; = "1"
+.field private static final TAG:Ljava/lang/String; = "SemDisplayQualityMtk"
+.field private static final mSupportDPDebug:Z
+.field private static final mSupportDpBackOff:Z
+.field private static final mSupportDpRatio:Z
+.field private static final mSupportOutdoor:Z
+.field private static final mSupportVividPlus:Z
+
+# instance fields
+.field private dpHelper:Lcom/samsung/android/displayport/DisplayportHelper;
+.field private mCurAALMode:I
+.field private mPQHelper:Lcom/samsung/android/displayquality/PictureQualityHelper;
+
+# direct methods
+.method static constructor <clinit>()V
+    .locals 1
+    sget-boolean v0, Lcom/samsung/android/displayquality/SemDisplayQualityFeature;->OUTDOOR_VISIBILITY_SUPPORT:Z
+    sput-boolean v0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mSupportOutdoor:Z
+    sget-boolean v0, Lcom/samsung/android/displayquality/SemDisplayQualityFeature;->VIVID_PLUS_SUPPORT:Z
+    sput-boolean v0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mSupportVividPlus:Z
+    sget-boolean v0, Lcom/samsung/android/displayquality/SemDisplayQualityFeature;->DP_BACKOFF_SUPPORT:Z
+    sput-boolean v0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mSupportDpBackOff:Z
+    sget-boolean v0, Lcom/samsung/android/displayquality/SemDisplayQualityFeature;->DP_RATIO_SUPPORT:Z
+    sput-boolean v0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mSupportDpRatio:Z
+    sget-boolean v0, Lcom/samsung/android/displayquality/SemDisplayQualityFeature;->DP_DEBUG_SUPPORT:Z
+    sput-boolean v0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mSupportDPDebug:Z
+    return-void
+.end method
+
+.method public constructor <init>(Landroid/content/Context;)V
+    .locals 6
+    invoke-direct {p0, p1}, Lcom/samsung/android/displayquality/SemDisplayQualityAP;-><init>(Landroid/content/Context;)V
+    const/4 v0, 0x0
+    iput-object v0, p0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mPQHelper:Lcom/samsung/android/displayquality/PictureQualityHelper;
+    iput-object v0, p0, Lcom/samsung/android/displayquality/SemDisplayQuality;->dpHelper:Lcom/samsung/android/displayport/DisplayportHelper;
+    sget-boolean v1, Lcom/samsung/android/displayquality/SemDisplayQuality;->mSupportOutdoor:Z
+    sget-boolean v2, Lcom/samsung/android/displayquality/SemDisplayQuality;->mSupportVividPlus:Z
+    const-string/jumbo v3, "SemDisplayQualityMtk"
+    if-nez v1, :cond_4
+    const-string/jumbo p0, "OUTDOOR_VISIBILITY not support"
+    invoke-static {v3, p0}, Landroid/util/Slog;->i(Ljava/lang/String;Ljava/lang/String;)I
+    return-void
+    :cond_4
+    invoke-direct {p0}, Lcom/samsung/android/displayquality/SemDisplayQuality;->isDRESupport()Z
+    move-result p1
+    if-nez p1, :cond_5
+    const-string p0, "AAL DRE not support"
+    invoke-static {v3, p0}, Landroid/util/Slog;->i(Ljava/lang/String;Ljava/lang/String;)I
+    return-void
+    :cond_5
+    new-instance p1, Lcom/samsung/android/displayquality/PictureQualityHelper;
+    invoke-direct {p1}, Lcom/samsung/android/displayquality/PictureQualityHelper;-><init>()V
+    iput-object p1, p0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mPQHelper:Lcom/samsung/android/displayquality/PictureQualityHelper;
+    invoke-virtual {p1}, Lcom/samsung/android/displayquality/PictureQualityHelper;->getPQtAALFunction()I
+    move-result p1
+    iput p1, p0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mCurAALMode:I
+    if-eqz v1, :cond_6
+    invoke-direct {p0}, Lcom/samsung/android/displayquality/SemDisplayQuality;->checkBrightnessModeAndRunDRE()V
+    const/4 p1, 0x1
+    iput-boolean p1, p0, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->mUseScreenStatusAsyncHandle:Z
+    invoke-virtual {p0}, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->startScreenStatusReceiver()V
+    sget-object p1, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->SCREEN_BRIGHTNESS_MODE_URI:Landroid/net/Uri;
+    invoke-virtual {p0, p1}, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->startSettingObserver(Landroid/net/Uri;)V
+    :cond_6
+    if-eqz v2, :cond_7
+    invoke-direct {p0}, Lcom/samsung/android/displayquality/SemDisplayQuality;->checkScreenModeAndSetPictureMode()V
+    sget-object p1, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->SCREEN_MODE_SETTING_URI:Landroid/net/Uri;
+    invoke-virtual {p0, p1}, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->startSettingObserver(Landroid/net/Uri;)V
+    :cond_7
+    return-void
+.end method
+
+.method private checkBrightnessModeAndRunDRE()V
+    .locals 2
+    iget-object v0, p0, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->mBrightnessModeLock:Ljava/lang/Object;
+    monitor-enter v0
+    :try_start_0
+    iget-object v1, p0, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->mContentResolver:Landroid/content/ContentResolver;
+    invoke-virtual {p0, v1}, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->isBrightnessModeAuto(Landroid/content/ContentResolver;)Z
+    move-result v1
+    iput-boolean v1, p0, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->mIsBrightnessModeAuto:Z
+    if-eqz v1, :cond_0
+    invoke-direct {p0}, Lcom/samsung/android/displayquality/SemDisplayQuality;->enableDRE()V
+    goto :goto_0
+    :catchall_0
+    move-exception p0
+    goto :goto_1
+    :cond_0
+    invoke-direct {p0}, Lcom/samsung/android/displayquality/SemDisplayQuality;->disableDRE()V
+    :goto_0
+    monitor-exit v0
+    return-void
+    :goto_1
+    monitor-exit v0
+    :try_end_0
+    .catchall {:try_start_0 .. :try_end_0} :catchall_0
+    throw p0
+.end method
+
+.method private checkScreenModeAndSetPictureMode()V
+    .locals 1
+    invoke-virtual {p0}, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->getScreenModeSetting()I
+    move-result v0
+    invoke-virtual {p0, v0}, Lcom/samsung/android/displayquality/SemDisplayQuality;->handleScreenModeChanged(I)V
+    return-void
+.end method
+
+.method private disableDRE()V
+    .locals 1
+    iget-object p0, p0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mPQHelper:Lcom/samsung/android/displayquality/PictureQualityHelper;
+    if-eqz p0, :cond_0
+    const/4 v0, 0x0
+    invoke-virtual {p0, v0}, Lcom/samsung/android/displayquality/PictureQualityHelper;->setPQAALFunctionProperty(I)V
+    :cond_0
+    return-void
+.end method
+
+.method private enableDRE()V
+    .locals 1
+    iget-object p0, p0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mPQHelper:Lcom/samsung/android/displayquality/PictureQualityHelper;
+    if-eqz p0, :cond_0
+    const/4 v0, 0x4
+    invoke-virtual {p0, v0}, Lcom/samsung/android/displayquality/PictureQualityHelper;->setPQAALFunctionProperty(I)V
+    :cond_0
+    return-void
+.end method
+
+.method private isDRESupport()Z
+    .locals 2
+    const-string/jumbo p0, "ro.vendor.mtk_aal_support"
+    invoke-static {p0}, Landroid/os/SystemProperties;->get(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object p0
+    const-string v0, "1"
+    invoke-virtual {v0, p0}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
+    move-result p0
+    const/4 v0, 0x0
+    if-nez p0, :cond_0
+    return v0
+    :cond_0
+    const-string/jumbo p0, "ro.vendor.mtk_pq_support"
+    invoke-static {p0}, Landroid/os/SystemProperties;->get(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object p0
+    :try_start_0
+    invoke-static {p0}, Ljava/lang/Integer;->parseInt(Ljava/lang/String;)I
+    move-result p0
+    :try_end_0
+    .catch Ljava/lang/Exception; {:try_start_0 .. :try_end_0} :catch_0
+    if-lez p0, :cond_1
+    const/4 p0, 0x1
+    return p0
+    :catch_0
+    :cond_1
+    return v0
+.end method
+
+# virtual methods
+.method public enhanceOutdoorVisibilityByLux(I)V
+    .locals 0
+    return-void
+.end method
+
+.method public handleAutoBrightnessModeOff()V
+    .locals 0
+    invoke-direct {p0}, Lcom/samsung/android/displayquality/SemDisplayQuality;->disableDRE()V
+    return-void
+.end method
+
+.method public handleAutoBrightnessModeOn()V
+    .locals 0
+    invoke-direct {p0}, Lcom/samsung/android/displayquality/SemDisplayQuality;->enableDRE()V
+    return-void
+.end method
+
+.method public handleScreenModeChanged(I)V
+    .locals 1
+    const/4 v0, 0x2
+    if-ne p1, v0, :cond_0
+    iget-object p0, p0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mPQHelper:Lcom/samsung/android/displayquality/PictureQualityHelper;
+    if-eqz p0, :cond_1
+    const/4 p1, 0x0
+    invoke-virtual {p0, p1}, Lcom/samsung/android/displayquality/PictureQualityHelper;->setPQSetPictureMode(I)V
+    return-void
+    :cond_0
+    const/4 v0, 0x4
+    if-ne p1, v0, :cond_1
+    iget-object p0, p0, Lcom/samsung/android/displayquality/SemDisplayQuality;->mPQHelper:Lcom/samsung/android/displayquality/PictureQualityHelper;
+    if-eqz p0, :cond_1
+    const/4 p1, 0x1
+    invoke-virtual {p0, p1}, Lcom/samsung/android/displayquality/PictureQualityHelper;->setPQSetPictureMode(I)V
+    :cond_1
+    return-void
+.end method
+
+.method public handleScreenOff()V
+    .locals 0
+    return-void
+.end method
+
+.method public handleScreenOffAsync()V
+    .locals 0
+    invoke-direct {p0}, Lcom/samsung/android/displayquality/SemDisplayQuality;->disableDRE()V
+    return-void
+.end method
+
+.method public handleScreenOn()V
+    .locals 0
+    return-void
+.end method
+
+.method public handleScreenOnAsync()V
+    .locals 2
+    iget-object v0, p0, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->mBrightnessModeLock:Ljava/lang/Object;
+    monitor-enter v0
+    :try_start_0
+    iget-boolean v1, p0, Lcom/samsung/android/displayquality/SemDisplayQualityAP;->mIsBrightnessModeAuto:Z
+    if-eqz v1, :cond_0
+    invoke-direct {p0}, Lcom/samsung/android/displayquality/SemDisplayQuality;->enableDRE()V
+    :cond_0
+    monitor-exit v0
+    return-void
+    :catchall_0
+    move-exception p0
+    monitor-exit v0
+    :try_end_0
+    .catchall {:try_start_0 .. :try_end_0} :catchall_0
+    throw p0
+.end method
+EOF
     fi
 }
 
@@ -1249,9 +1452,8 @@ PATCH_CUSTOM_PLATFORM_SIGNATURE() {
     echo -e "Patching Custom Platform Signature in services.jar..."
     if [ -f "$SIG_PATCH_FILE" ]; then
         patch -p1 -d "$SERVICES_WORK_DIR" < "$SIG_PATCH_FILE" || true
-    else
-        echo -e "- Optional patch file $SIG_PATCH_FILE not found, skipping diff."
     fi
+    return 0
 }
 
 
@@ -1273,8 +1475,8 @@ PATCH_SECSETTINGS_OUTDOOR_MODE() {
         return 0
     fi
 
-    echo "- Decompiling SecSettings.apk for Outdoor Mode patch..."
-    DECOMPILE "$APKTOOL" "$FRAMEWORK_DIR" "$SEC_SETTINGS" "$WORK_DIR"
+    echo "- Decompiling SecSettings.apk (smali only, --no-res) for Outdoor Mode patch..."
+    DECOMPILE "$APKTOOL" "$FRAMEWORK_DIR" "$SEC_SETTINGS" "$WORK_DIR" "--no-res"
 
     local OUTDOOR_CONTROLLER=$(find "$WORK_DIR/SecSettings" -type f -path '*/com/samsung/android/settings/display/controller/SecOutDoorModePreferenceController.smali' -print -quit)
 
@@ -1286,7 +1488,7 @@ PATCH_SECSETTINGS_OUTDOOR_MODE() {
 
     return v0
     '
-        REPLACE_SMALI_METHOD "$OUTDOOR_CONTROLLER" ".method public isAvailable()Z" "$BODY_TRUE"
+        REPLACE_SMALI_METHOD "$OUTDOOR_CONTROLLER" "isAvailable()Z" "$BODY_TRUE"
     else
         echo "- Warning: SecOutDoorModePreferenceController.smali not found!"
     fi
@@ -1402,12 +1604,19 @@ PATCH_BT_LIB() {
     fi
 
     7z e "${EXTRACTED_FIRM_DIR}/system/system/apex/com.android.bt"*.apex \
-        "apex_payload.img" -o"$WORK_DIR" -y >/dev/null
+        "apex_payload.img" -o"$WORK_DIR" -y >/dev/null 2>&1 || true
 
-    debugfs -R "dump /lib64/libbluetooth_jni.so $WORK_DIR/libbluetooth_jni.so" \
-        "$WORK_DIR/apex_payload.img" >/dev/null
+    if [ -f "$WORK_DIR/apex_payload.img" ]; then
+        debugfs -R "dump /lib64/libbluetooth_jni.so $WORK_DIR/libbluetooth_jni.so" \
+            "$WORK_DIR/apex_payload.img" >/dev/null 2>&1 || true
+        rm -rf "$WORK_DIR/apex_payload.img"
+    fi
 
-    rm -rf "$WORK_DIR/apex_payload.img"
+    if [ ! -f "$BT_LIB_FILE" ] || [ ! -s "$BT_LIB_FILE" ]; then
+        echo -e "- libbluetooth_jni.so not present in APEX (Android 15/16+ Bluetooth stack); skipping legacyjni hex patch."
+        rm -f "$BT_LIB_FILE"
+        return 0
+    fi
 
     declare -A hex=(
         [136]=00122a0140395f01086b00020054 [1136]=00122a0140395f01086bde030014
@@ -1478,6 +1687,7 @@ PATCH_BT_LIB() {
 
     return 0
 }
+
 
 ###################################################################################################
 # PART 3: VNDK, SYSTEM_EXT, SELINUX (ORIGINAL) & FLOATING FEATURES
@@ -2756,6 +2966,24 @@ APPLY_MEDIATEK_PORT_FILES() {
     BUILD_PROP "$TARGET_DIR" "system" "sys.ipo.disable" "1"
     BUILD_PROP "$TARGET_DIR" "system" "ro.surface_flinger.use_content_detection_for_refresh_rate" "false"
     BUILD_PROP "$TARGET_DIR" "system" "ro.surface_flinger.enable_frame_rate_override" "false"
+
+    # (Add inside APPLY_MEDIATEK_PORT_FILES right after step 6 Hotword blobs):
+
+    # 6b. Copy Stock MediaTek Bluetooth APEX from SM-A346E
+    if ls "$STOCK_DIR"/system/system/apex/com.android.bt*.apex >/dev/null 2>&1; then
+        echo "- Copying SM-A346E MediaTek Bluetooth APEX..."
+        rm -rf "$TARGET_DIR"/system/system/apex/com.android.bt*.apex
+        cp -af "$STOCK_DIR"/system/system/apex/com.android.bt*.apex "$TARGET_DIR/system/system/apex/"
+    fi
+
+    # 6c. Merge SM-A346E fs_config and file_contexts for system and system_ext
+    mkdir -p "$TARGET_DIR/config"
+    for cfg in system_fs_config system_file_contexts system_ext_fs_config system_ext_file_contexts; do
+        if [ -f "$STOCK_DIR/config/$cfg" ]; then
+            cat "$STOCK_DIR/config/$cfg" >> "$TARGET_DIR/config/$cfg"
+            sort -u "$TARGET_DIR/config/$cfg" -o "$TARGET_DIR/config/$cfg"
+        fi
+    done
 }
 
 
@@ -3376,49 +3604,49 @@ GEN_FS_CONFIG() {
         return 1
     }
 
-    [ "$PARTITION" = "config" ] && return
+    [ "$PARTITION" = "config" ] && return 0
 
     mkdir -p "${EXTRACTED_FIRM_DIR}/config"
     local FS_CONFIG="${EXTRACTED_FIRM_DIR}/config/${PARTITION}_fs_config"
-    local TMP_EXISTING="$(mktemp)"
 
     touch "$FS_CONFIG"
+    sed -i 's/\r$//' "$FS_CONFIG"
 
     echo -e "Generating fs_config for partition: $PARTITION"
 
-    # Remove stale Cortex-M55 Hotword entries if present on product
     if [ "$PARTITION" = "product" ]; then
         sed -i '/HotwordEnrollmentOKGoogleEx4CORTEXM55/d' "$FS_CONFIG" 2>/dev/null || true
         sed -i '/HotwordEnrollmentXGoogleEx4CORTEXM55/d' "$FS_CONFIG" 2>/dev/null || true
     fi
 
-    awk '{print $1}' "$FS_CONFIG" | sort -u > "$TMP_EXISTING"
+    # Deduplicate existing entries by path (first column)
+    awk '!seen[$1]++' "$FS_CONFIG" > "${FS_CONFIG}.tmp" && mv "${FS_CONFIG}.tmp" "$FS_CONFIG"
+
+    declare -A EXISTING_FS=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [ -z "$line" ] && continue
+        local p_only="${line%% *}"
+        EXISTING_FS["$p_only"]=1
+    done < "$FS_CONFIG"
 
     find "${EXTRACTED_FIRM_DIR}/$PARTITION" -mindepth 1 \( -type f -o -type d -o -type l \) | while IFS= read -r item; do
-
         REL_PATH="${item#${EXTRACTED_FIRM_DIR}/$PARTITION/}"
         PATH_ENTRY="$PARTITION/$REL_PATH"
 
-        grep -qxF "$PATH_ENTRY" "$TMP_EXISTING" && continue
+        [[ -n "${EXISTING_FS[$PATH_ENTRY]-}" ]] && continue
 
         if [ -d "$item" ]; then
-            echo -e "- Adding: $PATH_ENTRY 0 0 0755"
             printf "%s 0 0 0755\n" "$PATH_ENTRY" >> "$FS_CONFIG"
-
         else
             if [[ "$REL_PATH" == */bin/* ]]; then
-                echo -e "- Adding: $PATH_ENTRY 0 2000 0755"
                 printf "%s 0 2000 0755\n" "$PATH_ENTRY" >> "$FS_CONFIG"
             else
-                echo -e "- Adding: $PATH_ENTRY 0 0 0644"
                 printf "%s 0 0 0644\n" "$PATH_ENTRY" >> "$FS_CONFIG"
             fi
         fi
-
     done
 
-    rm -f "$TMP_EXISTING"
-
+    unset EXISTING_FS
     echo -e "- $PARTITION fs_config generated"
 }
 
@@ -3445,7 +3673,7 @@ GEN_FILE_CONTEXTS() {
         return 1
     }
 
-    [ "$PARTITION" = "config" ] && return
+    [ "$PARTITION" = "config" ] && return 0
 
     escape_path() {
         local path="$1"
@@ -3456,7 +3684,7 @@ GEN_FILE_CONTEXTS() {
             c="${path:i:1}"
 
             case "$c" in
-                '.'|'+'|'['|']'|'*'|'?'|'^'|'$'|'\\')
+                '.'|'+'|'['|']'|'*'|'?'|'^'|'$'|'\\'|'('|')'|'{'|'}'|'|')
                     result+="\\$c"
                     ;;
                 *)
@@ -3472,31 +3700,29 @@ GEN_FILE_CONTEXTS() {
     local FILE_CONTEXTS="${EXTRACTED_FIRM_DIR}/config/${PARTITION}_file_contexts"
 
     touch "$FILE_CONTEXTS"
+    sed -i 's/\r$//' "$FILE_CONTEXTS"
 
     echo -e "Generating file_contexts for partition: $PARTITION"
 
-    # Remove stale Cortex-M55 Hotword contexts if present on product
     if [ "$PARTITION" = "product" ]; then
         sed -i '/HotwordEnrollmentOKGoogleEx4CORTEXM55/d' "$FILE_CONTEXTS" 2>/dev/null || true
         sed -i '/HotwordEnrollmentXGoogleEx4CORTEXM55/d' "$FILE_CONTEXTS" 2>/dev/null || true
     fi
 
+    # Deduplicate existing entries by path (first column)
+    awk '!seen[$1]++' "$FILE_CONTEXTS" > "${FILE_CONTEXTS}.tmp" && mv "${FILE_CONTEXTS}.tmp" "$FILE_CONTEXTS"
+
     declare -A EXISTING=()
 
     while IFS= read -r line || [[ -n "$line" ]]; do
         [ -z "$line" ] && continue
-
-        local PATH_ONLY=$(echo -e "$line" | awk '{print $1}')
-
+        local PATH_ONLY="${line%% *}"
         EXISTING["$PATH_ONLY"]=1
-
     done < "$FILE_CONTEXTS"
 
     find "${EXTRACTED_FIRM_DIR}/$PARTITION" -mindepth 1 \( -type f -o -type d -o -type l \) | while IFS= read -r item; do
-
         local REL_PATH="${item#${EXTRACTED_FIRM_DIR}/$PARTITION}"
         local PATH_ENTRY="/$PARTITION$REL_PATH"
-
         local ESCAPED_PATH="/$(escape_path "${PATH_ENTRY#/}")"
 
         [[ -n "${EXISTING[$ESCAPED_PATH]-}" ]] && continue
@@ -3513,11 +3739,7 @@ GEN_FILE_CONTEXTS() {
         fi
 
         printf "%s %s\n" "$ESCAPED_PATH" "$ITEM_CONTEXT" >> "$FILE_CONTEXTS"
-
-        echo -e "- Added: $ESCAPED_PATH"
-
         EXISTING["$ESCAPED_PATH"]=1
-
     done
 
     if ! grep -qE "^/${PARTITION}\(/\.\*\)\?[[:space:]]" "$FILE_CONTEXTS"; then
@@ -3559,7 +3781,7 @@ BUILD_IMG() {
         local FS_CONFIG="${EXTRACTED_FIRM_DIR}/config/${PARTITION}_fs_config"
         local FILE_CONTEXTS="${EXTRACTED_FIRM_DIR}/config/${PARTITION}_file_contexts"
 
-        [[ -d "$SOURCE_DIR" ]] || return
+        [[ -d "$SOURCE_DIR" ]] || return 0
 
         local EXTRACTED_SIZE=$(du -sb --apparent-size "$SOURCE_DIR" | cut -f1)
         local MOUNT_POINT="/$PARTITION"
@@ -3568,16 +3790,16 @@ BUILD_IMG() {
 
         [[ -f "$FS_CONFIG" ]] || {
             echo -e "Warning: $FS_CONFIG missing, skipping $PARTITION"
-            return
+            return 0
         }
 
         [[ -f "$FILE_CONTEXTS" ]] || {
             echo -e "Warning: $FILE_CONTEXTS missing, skipping $PARTITION"
-            return
+            return 0
         }
 
-        sort -u "$FILE_CONTEXTS" -o "$FILE_CONTEXTS"
-        sort -u "$FS_CONFIG" -o "$FS_CONFIG"
+        awk '!seen[$1]++' "$FILE_CONTEXTS" | sort -u > "${FILE_CONTEXTS}.tmp" && mv "${FILE_CONTEXTS}.tmp" "$FILE_CONTEXTS"
+        awk '!seen[$1]++' "$FS_CONFIG" | sort -u > "${FS_CONFIG}.tmp" && mv "${FS_CONFIG}.tmp" "$FS_CONFIG"
 
         if [[ "$FILE_SYSTEM" == "erofs" ]]; then
             echo " "
@@ -3590,7 +3812,7 @@ BUILD_IMG() {
                 -z lz4hc \
                 -b 4096 \
                 -T 1199145600 \
-                "$OUT_IMG" "$SOURCE_DIR" >/dev/null 2>&1
+                "$OUT_IMG" "$SOURCE_DIR"
 
         elif [[ "$FILE_SYSTEM" == "ext4" ]]; then
             echo " "
@@ -3652,7 +3874,7 @@ BUILD_IMG() {
 
         else
             echo -e "- Unsupported filesystem: $FILE_SYSTEM"
-            return
+            return 0
         fi
     }
 
